@@ -2848,6 +2848,17 @@ impl Window {
         self.capslock
     }
 
+    pub(crate) fn schedule_pending_platform_frame(&self) {
+        // A clean window may still have a scene to present or callbacks that
+        // were queued while its previous frame was running.
+        if self.invalidator.is_dirty()
+            || self.needs_present.get()
+            || !self.next_frame_callbacks.borrow().is_empty()
+        {
+            self.platform_window.schedule_frame();
+        }
+    }
+
     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
@@ -7094,7 +7105,8 @@ mod tests {
         let window = cx.add_window(|_, _| Empty);
         let test_window = cx.test_window(window.into());
 
-        // A fresh test window was drawn inline by `open_window` and has parked.
+        assert!(test_window.simulate_scheduled_frame());
+        assert!(test_window.simulate_scheduled_frame());
         assert!(!test_window.frame_scheduled());
 
         cx.update_window(window.into(), |_, window, _| {
@@ -7109,8 +7121,28 @@ mod tests {
 
         assert!(test_window.simulate_scheduled_frame());
         assert!(
-            !test_window.frame_scheduled(),
-            "an idle window must let the render loop park again"
+            test_window.frame_scheduled(),
+            "presenting the frame must await one compositor callback"
+        );
+        assert!(test_window.simulate_scheduled_frame());
+        assert!(!test_window.frame_scheduled());
+    }
+
+    #[gpui::test]
+    fn pending_presentation_wakes_a_parked_render_loop(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        let test_window = cx.test_window(window.into());
+
+        assert!(test_window.simulate_scheduled_frame());
+        assert!(test_window.simulate_scheduled_frame());
+        assert!(!test_window.frame_scheduled());
+
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+
+        assert!(
+            test_window.frame_scheduled(),
+            "a rendered scene awaiting presentation must wake the render loop"
         );
     }
 
