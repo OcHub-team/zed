@@ -1569,6 +1569,12 @@ impl App {
         self.restart_path = Some(path);
     }
 
+    /// Registers the application for an operating-system-managed restart after an update.
+    #[cfg(target_os = "windows")]
+    pub fn register_update_restart(&self) -> Result<()> {
+        self.platform.register_update_restart()
+    }
+
     /// Returns the HTTP client for the application.
     pub fn http_client(&self) -> Arc<dyn HttpClient> {
         self.http_client.clone()

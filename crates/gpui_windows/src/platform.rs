@@ -21,7 +21,16 @@ use windows::{
         Foundation::*,
         Graphics::{Direct3D11::ID3D11Device, Gdi::*},
         Security::Credentials::*,
-        System::{Com::*, LibraryLoader::*, Ole::*, Power::*, SystemInformation::*},
+        System::{
+            Com::*,
+            LibraryLoader::*,
+            Ole::*,
+            Power::*,
+            Recovery::{
+                RESTART_NO_CRASH, RESTART_NO_HANG, RESTART_NO_REBOOT, RegisterApplicationRestart,
+            },
+            SystemInformation::*,
+        },
         UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
     },
     core::*,
@@ -481,6 +490,18 @@ impl Platform for WindowsPlatform {
                 }
             })
             .detach();
+    }
+
+    fn register_update_restart(&self) -> Result<()> {
+        // SAFETY: A null command line requests a normal launch with no arguments,
+        // and the flags are a valid combination that enables only update restarts.
+        unsafe {
+            RegisterApplicationRestart(
+                PCWSTR::null(),
+                RESTART_NO_CRASH | RESTART_NO_HANG | RESTART_NO_REBOOT,
+            )
+        }
+        .context("failed to register application restart")
     }
 
     fn activate(&self, _ignoring_other_apps: bool) {}
