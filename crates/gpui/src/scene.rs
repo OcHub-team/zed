@@ -9,10 +9,12 @@ use crate::{
     Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
 use std::{
+    any::Any,
     fmt::Debug,
     iter::Peekable,
     ops::{Add, Range, Sub},
     slice,
+    sync::Arc,
 };
 
 #[allow(non_camel_case_types, unused)]
@@ -771,6 +773,33 @@ pub struct PaintSurface {
     pub content_mask: ContentMask<ScaledPixels>,
     #[cfg(target_os = "macos")]
     pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
+    #[cfg(target_os = "macos")]
+    pub frame_lifetime: Option<SurfaceFrameLifetime>,
+}
+
+/// Keeps resources associated with a surface frame alive until the GPU has
+/// finished sampling the frame.
+#[derive(Clone)]
+pub struct SurfaceFrameLifetime {
+    _resource: Arc<dyn Any + Send + Sync>,
+}
+
+impl SurfaceFrameLifetime {
+    /// Creates a surface frame lifetime from an application-owned resource.
+    pub fn new<T>(resource: Arc<T>) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        Self {
+            _resource: resource,
+        }
+    }
+}
+
+impl Debug for SurfaceFrameLifetime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("SurfaceFrameLifetime").finish()
+    }
 }
 
 impl From<PaintSurface> for Primitive {

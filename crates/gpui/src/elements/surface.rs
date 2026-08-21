@@ -1,10 +1,12 @@
 use crate::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
+    ObjectFit, Pixels, Style, StyleRefinement, Styled, SurfaceFrameLifetime, Window,
 };
 #[cfg(target_os = "macos")]
 use core_video::pixel_buffer::CVPixelBuffer;
 use refineable::Refineable;
+#[cfg(target_os = "macos")]
+use std::{any::Any, sync::Arc};
 
 /// A source of a surface's content.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +28,8 @@ pub struct Surface {
     source: SurfaceSource,
     object_fit: ObjectFit,
     style: StyleRefinement,
+    #[cfg(target_os = "macos")]
+    frame_lifetime: Option<SurfaceFrameLifetime>,
 }
 
 /// Create a new surface element.
@@ -35,6 +39,7 @@ pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
         source: source.into(),
         object_fit: ObjectFit::Contain,
         style: Default::default(),
+        frame_lifetime: None,
     }
 }
 
@@ -42,6 +47,17 @@ impl Surface {
     /// Set the object fit for the image.
     pub fn object_fit(mut self, object_fit: ObjectFit) -> Self {
         self.object_fit = object_fit;
+        self
+    }
+
+    /// Keeps an application-owned frame resource alive until Metal has
+    /// finished sampling this surface.
+    #[cfg(target_os = "macos")]
+    pub fn with_frame_lifetime<T>(mut self, resource: Arc<T>) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        self.frame_lifetime = Some(SurfaceFrameLifetime::new(resource));
         self
     }
 }
@@ -98,7 +114,11 @@ impl Element for Surface {
                 let size = crate::size(surface.get_width().into(), surface.get_height().into());
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, surface.clone());
+                window.paint_surface_with_lifetime(
+                    new_bounds,
+                    surface.clone(),
+                    self.frame_lifetime.clone(),
+                );
             }
             #[allow(unreachable_patterns)]
             _ => {}

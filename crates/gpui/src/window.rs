@@ -4682,6 +4682,18 @@ impl Window {
     /// This method should only be called as part of the paint phase of element drawing.
     #[cfg(target_os = "macos")]
     pub fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer) {
+        self.paint_surface_with_lifetime(bounds, image_buffer, None);
+    }
+
+    /// Paint a surface while retaining an application-owned frame resource
+    /// until the GPU has finished sampling it.
+    #[cfg(target_os = "macos")]
+    pub fn paint_surface_with_lifetime(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        image_buffer: CVPixelBuffer,
+        frame_lifetime: Option<crate::SurfaceFrameLifetime>,
+    ) {
         use crate::PaintSurface;
 
         self.invalidator.debug_assert_paint();
@@ -4693,6 +4705,7 @@ impl Window {
             bounds,
             content_mask,
             image_buffer,
+            frame_lifetime,
         });
     }
 
