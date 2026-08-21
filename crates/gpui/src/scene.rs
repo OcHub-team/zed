@@ -774,7 +774,20 @@ pub struct PaintSurface {
     #[cfg(target_os = "macos")]
     pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
     #[cfg(target_os = "macos")]
+    pub color_space: SurfaceColorSpace,
+    #[cfg(target_os = "macos")]
     pub frame_lifetime: Option<SurfaceFrameLifetime>,
+}
+
+/// The encoded RGB color space of a macOS surface.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u32)]
+pub enum SurfaceColorSpace {
+    /// Standard RGB, which is also the default for existing GPUI surfaces.
+    #[default]
+    Srgb = 0,
+    /// Display P3 using the sRGB transfer function.
+    DisplayP3 = 1,
 }
 
 /// Keeps resources associated with a surface frame alive until the GPU has

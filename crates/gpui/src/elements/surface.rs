@@ -1,6 +1,7 @@
 use crate::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    ObjectFit, Pixels, Style, StyleRefinement, Styled, SurfaceFrameLifetime, Window,
+    ObjectFit, Pixels, Style, StyleRefinement, Styled, SurfaceColorSpace, SurfaceFrameLifetime,
+    Window,
 };
 #[cfg(target_os = "macos")]
 use core_video::pixel_buffer::CVPixelBuffer;
@@ -30,6 +31,8 @@ pub struct Surface {
     style: StyleRefinement,
     #[cfg(target_os = "macos")]
     frame_lifetime: Option<SurfaceFrameLifetime>,
+    #[cfg(target_os = "macos")]
+    color_space: SurfaceColorSpace,
 }
 
 /// Create a new surface element.
@@ -40,6 +43,7 @@ pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
         object_fit: ObjectFit::Contain,
         style: Default::default(),
         frame_lifetime: None,
+        color_space: SurfaceColorSpace::Srgb,
     }
 }
 
@@ -58,6 +62,13 @@ impl Surface {
         T: Any + Send + Sync,
     {
         self.frame_lifetime = Some(SurfaceFrameLifetime::new(resource));
+        self
+    }
+
+    /// Declares the encoded RGB color space of this surface.
+    #[cfg(target_os = "macos")]
+    pub fn with_color_space(mut self, color_space: SurfaceColorSpace) -> Self {
+        self.color_space = color_space;
         self
     }
 }
@@ -114,9 +125,10 @@ impl Element for Surface {
                 let size = crate::size(surface.get_width().into(), surface.get_height().into());
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
-                window.paint_surface_with_lifetime(
+                window.paint_surface_with_color_space_and_lifetime(
                     new_bounds,
                     surface.clone(),
+                    self.color_space,
                     self.frame_lifetime.clone(),
                 );
             }

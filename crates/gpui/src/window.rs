@@ -4694,6 +4694,24 @@ impl Window {
         image_buffer: CVPixelBuffer,
         frame_lifetime: Option<crate::SurfaceFrameLifetime>,
     ) {
+        self.paint_surface_with_color_space_and_lifetime(
+            bounds,
+            image_buffer,
+            crate::SurfaceColorSpace::Srgb,
+            frame_lifetime,
+        );
+    }
+
+    /// Paint a color-managed surface while retaining an application-owned frame
+    /// resource until the GPU has finished sampling it.
+    #[cfg(target_os = "macos")]
+    pub fn paint_surface_with_color_space_and_lifetime(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        image_buffer: CVPixelBuffer,
+        color_space: crate::SurfaceColorSpace,
+        frame_lifetime: Option<crate::SurfaceFrameLifetime>,
+    ) {
         use crate::PaintSurface;
 
         self.invalidator.debug_assert_paint();
@@ -4705,6 +4723,7 @@ impl Window {
             bounds,
             content_mask,
             image_buffer,
+            color_space,
             frame_lifetime,
         });
     }

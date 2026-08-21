@@ -1173,6 +1173,12 @@ impl MetalRenderer {
                 mem::size_of_val(&texture_size) as u64,
                 &texture_size as *const Size<DevicePixels> as *const _,
             );
+            let color_space = surface.color_space as u32;
+            command_encoder.set_fragment_bytes(
+                SurfaceInputIndex::ColorSpace as u64,
+                mem::size_of_val(&color_space) as u64,
+                &color_space as *const u32 as *const _,
+            );
 
             #[allow(non_upper_case_globals)]
             match surface.image_buffer.get_pixel_format() {
@@ -1632,6 +1638,7 @@ enum SurfaceInputIndex {
     TextureSize = 3,
     YTexture = 4,
     CbCrTexture = 5,
+    ColorSpace = 6,
 }
 
 #[repr(C)]

@@ -901,9 +901,24 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
 
 fragment float4 bgra_surface_fragment(
     SurfaceFragmentInput input [[stage_in]],
-    texture2d<float> bgra_texture [[texture(SurfaceInputIndex_YTexture)]]) {
+    texture2d<float> bgra_texture [[texture(SurfaceInputIndex_YTexture)]],
+    constant uint *color_space [[buffer(SurfaceInputIndex_ColorSpace)]]) {
   constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
-  return bgra_texture.sample(texture_sampler, input.texture_position);
+  float4 color = bgra_texture.sample(texture_sampler, input.texture_position);
+  if (*color_space != 1 || color.a <= 0.0) {
+    return color;
+  }
+
+  // Display P3 and sRGB share a transfer curve. Convert the straight color in
+  // linear light, then restore premultiplied alpha for GPUI's surface blend.
+  float3 p3 = clamp(color.rgb / color.a, 0.0, 1.0);
+  float3 linear_p3 = srgb_to_linear(p3);
+  float3 linear_srgb = float3(
+      1.224745 * linear_p3.r - 0.224904 * linear_p3.g,
+     -0.042058 * linear_p3.r + 1.042081 * linear_p3.g,
+     -0.019642 * linear_p3.r - 0.078655 * linear_p3.g + 1.098537 * linear_p3.b);
+  float3 srgb = linear_to_srgb(clamp(linear_srgb, 0.0, 1.0));
+  return float4(srgb * color.a, color.a);
 }
 
 float4 hsla_to_rgba(Hsla hsla) {
