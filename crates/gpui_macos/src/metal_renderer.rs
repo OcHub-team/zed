@@ -7,8 +7,8 @@ use cocoa::{
     quartzcore::AutoresizingMask,
 };
 use gpui::{
-    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
-    PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, PaintSurface, Path,
+    Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
@@ -1156,6 +1156,11 @@ impl MetalRenderer {
             Some(&instance_bindings.surfaces.buffer),
             instance_bindings.surfaces.offset as u64,
         );
+        command_encoder.set_fragment_buffer(
+            SurfaceInputIndex::Surfaces as u64,
+            Some(&instance_bindings.surfaces.buffer),
+            instance_bindings.surfaces.offset as u64,
+        );
         command_encoder.set_vertex_bytes(
             SurfaceInputIndex::ViewportSize as u64,
             mem::size_of_val(&viewport_size) as u64,
@@ -1465,6 +1470,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
         surfaces: writer.write_iter(scene.surfaces.iter().map(|surface| SurfaceBounds {
             bounds: surface.bounds,
             content_mask: surface.content_mask,
+            corner_radii: surface.corner_radii,
         }))?,
     })
 }
@@ -1658,6 +1664,7 @@ pub struct PathSprite {
 pub struct SurfaceBounds {
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    pub corner_radii: Corners<ScaledPixels>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1690,5 +1697,96 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_foundation::{
+        base::CFType, boolean::CFBoolean, dictionary::CFDictionary, string::CFString,
+    };
+    use core_video::pixel_buffer::{CVPixelBuffer, CVPixelBufferKeys, kCVPixelFormatType_32BGRA};
+    use gpui::{ContentMask, Corners, PlatformHeadlessRenderer as _, SurfaceColorSpace};
+
+    /// Opaque white, IOSurface-backed BGRA pixel buffer of `side` × `side`.
+    fn white_surface(side: usize) -> CVPixelBuffer {
+        let io_surface_properties = CFDictionary::<CFString, CFType>::from_CFType_pairs(&[]);
+        let options = CFDictionary::from_CFType_pairs(&[
+            (
+                CFString::from(CVPixelBufferKeys::IOSurfaceProperties),
+                io_surface_properties.as_CFType(),
+            ),
+            (
+                CFString::from(CVPixelBufferKeys::MetalCompatibility),
+                CFBoolean::true_value().as_CFType(),
+            ),
+        ]);
+        let buffer = CVPixelBuffer::new(kCVPixelFormatType_32BGRA, side, side, Some(&options))
+            .expect("CVPixelBuffer");
+        buffer.lock_base_address(0);
+        // SAFETY: the buffer is locked and its backing store spans
+        // `bytes_per_row * height` bytes.
+        unsafe {
+            let bytes = buffer.get_base_address() as *mut u8;
+            let len = buffer.get_bytes_per_row() * buffer.get_height();
+            ptr::write_bytes(bytes, 0xFF, len);
+        }
+        buffer.unlock_base_address(0);
+        buffer
+    }
+
+    fn render_white_surface(side: i32, corner_radii: Corners<ScaledPixels>) -> RgbaImage {
+        let mut renderer = MetalHeadlessRenderer::new();
+        let px = |value: i32| ScaledPixels(value as f32);
+        let bounds = Bounds {
+            origin: point(px(0), px(0)),
+            size: size(px(side), px(side)),
+        };
+        let mut scene = Scene::default();
+        scene.insert_primitive(PaintSurface {
+            order: 0,
+            bounds,
+            content_mask: ContentMask { bounds },
+            corner_radii,
+            image_buffer: white_surface(side as usize),
+            color_space: SurfaceColorSpace::Srgb,
+            frame_lifetime: None,
+        });
+        scene.finish();
+        renderer
+            .render_scene_to_image(&scene, size(DevicePixels(side), DevicePixels(side)))
+            .expect("render")
+    }
+
+    #[test]
+    fn surface_corner_radii_clip_the_surface() {
+        let side = 64;
+        let image = render_white_surface(side, Corners::all(ScaledPixels(24.)));
+        // The headless target clears to opaque black, so coverage shows in
+        // the colour channels rather than alpha.
+        let red = |x: u32, y: u32| image.get_pixel(x, y)[0];
+        let last = side as u32 - 1;
+        let mid = side as u32 / 2;
+
+        // The four corners are cut away by the radius.
+        assert_eq!(red(0, 0), 0);
+        assert_eq!(red(last, 0), 0);
+        assert_eq!(red(0, last), 0);
+        assert_eq!(red(last, last), 0);
+        // Edge midpoints and the centre are still covered.
+        assert_eq!(red(mid, 0), 255);
+        assert_eq!(red(0, mid), 255);
+        assert_eq!(red(mid, mid), 255);
+    }
+
+    #[test]
+    fn zero_surface_corner_radii_keep_the_corners() {
+        let side = 32;
+        let image = render_white_surface(side, Corners::default());
+        let last = side as u32 - 1;
+        assert_eq!(image.get_pixel(0, 0)[0], 255);
+        assert_eq!(image.get_pixel(last, last)[0], 255);
+        assert_eq!(image.get_pixel(last, 0)[0], 255);
     }
 }

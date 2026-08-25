@@ -4712,16 +4712,59 @@ impl Window {
         color_space: crate::SurfaceColorSpace,
         frame_lifetime: Option<crate::SurfaceFrameLifetime>,
     ) {
+        self.paint_surface_with_corners_color_space_and_lifetime(
+            bounds,
+            Corners::default(),
+            image_buffer,
+            color_space,
+            frame_lifetime,
+        );
+    }
+
+    /// Paint a surface clipped to rounded corners, the way `paint_image`
+    /// rounds an image sprite. Radii larger than the bounds allow are clamped.
+    #[cfg(target_os = "macos")]
+    pub fn paint_surface_with_corners(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        image_buffer: CVPixelBuffer,
+    ) {
+        self.paint_surface_with_corners_color_space_and_lifetime(
+            bounds,
+            corner_radii,
+            image_buffer,
+            crate::SurfaceColorSpace::Srgb,
+            None,
+        );
+    }
+
+    /// Paint a color-managed surface clipped to rounded corners while
+    /// retaining an application-owned frame resource until the GPU has
+    /// finished sampling it.
+    #[cfg(target_os = "macos")]
+    pub fn paint_surface_with_corners_color_space_and_lifetime(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        image_buffer: CVPixelBuffer,
+        color_space: crate::SurfaceColorSpace,
+        frame_lifetime: Option<crate::SurfaceFrameLifetime>,
+    ) {
         use crate::PaintSurface;
 
         self.invalidator.debug_assert_paint();
 
+        let corner_radii = corner_radii
+            .clamp_radii_for_quad_size(bounds.size)
+            .scale(self.scale_factor());
         let bounds = self.snap_bounds(bounds);
         let content_mask = self.snapped_content_mask();
         self.next_frame.scene.insert_primitive(PaintSurface {
             order: 0,
             bounds,
             content_mask,
+            corner_radii,
             image_buffer,
             color_space,
             frame_lifetime,

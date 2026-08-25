@@ -850,13 +850,25 @@ fragment float4 path_sprite_fragment(
 struct SurfaceVertexOutput {
   float4 position [[position]];
   float2 texture_position;
+  uint surface_id [[flat]];
   float clip_distance [[clip_distance]][4];
 };
 
 struct SurfaceFragmentInput {
   float4 position [[position]];
   float2 texture_position;
+  uint surface_id [[flat]];
 };
+
+// Anti-aliased coverage of the surface's rounded-rect outline at this
+// fragment; 1.0 everywhere for zero radii.
+float surface_corner_coverage(SurfaceFragmentInput input,
+                              constant SurfaceBounds *surfaces) {
+  SurfaceBounds surface = surfaces[input.surface_id];
+  float distance =
+      quad_sdf(input.position.xy, surface.bounds, surface.corner_radii);
+  return saturate(0.5 - distance);
+}
 
 vertex SurfaceVertexOutput surface_vertex(
     uint unit_vertex_id [[vertex_id]], uint surface_id [[instance_id]],
@@ -878,10 +890,13 @@ vertex SurfaceVertexOutput surface_vertex(
   return SurfaceVertexOutput{
       device_position,
       texture_position,
+      surface_id,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
 fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
+                                 constant SurfaceBounds *surfaces
+                                 [[buffer(SurfaceInputIndex_Surfaces)]],
                                  texture2d<float> y_texture
                                  [[texture(SurfaceInputIndex_YTexture)]],
                                  texture2d<float> cb_cr_texture
@@ -896,15 +911,21 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
       y_texture.sample(texture_sampler, input.texture_position).r,
       cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);
 
-  return ycbcrToRGBTransform * ycbcr;
+  float4 color = ycbcrToRGBTransform * ycbcr;
+  // This pipeline blends with straight alpha.
+  color.a *= surface_corner_coverage(input, surfaces);
+  return color;
 }
 
 fragment float4 bgra_surface_fragment(
     SurfaceFragmentInput input [[stage_in]],
+    constant SurfaceBounds *surfaces [[buffer(SurfaceInputIndex_Surfaces)]],
     texture2d<float> bgra_texture [[texture(SurfaceInputIndex_YTexture)]],
     constant uint *color_space [[buffer(SurfaceInputIndex_ColorSpace)]]) {
   constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
   float4 color = bgra_texture.sample(texture_sampler, input.texture_position);
+  // This pipeline blends premultiplied, so coverage scales every channel.
+  color *= surface_corner_coverage(input, surfaces);
   if (*color_space != 1 || color.a <= 0.0) {
     return color;
   }
