@@ -1840,6 +1840,10 @@ pub struct WindowOptions {
     /// The appearance of the window background.
     pub window_background: WindowBackgroundAppearance,
 
+    /// Output color space on macOS. Other platforms currently use sRGB.
+    /// UI colors remain sRGB and are converted when Display P3 is selected.
+    pub color_space: WindowColorSpace,
+
     /// Application identifier of the window. Can by used by desktop environments to group applications together.
     pub app_id: Option<String>,
 
@@ -1869,6 +1873,7 @@ pub struct WindowOptions {
 #[allow(missing_docs)]
 pub struct WindowParams {
     pub bounds: Bounds<Pixels>,
+    pub color_space: WindowColorSpace,
 
     /// The titlebar configuration of the window
     #[cfg_attr(feature = "wayland", allow(dead_code))]
@@ -1975,6 +1980,7 @@ impl Default for WindowOptions {
             is_minimizable: true,
             display_id: None,
             window_background: WindowBackgroundAppearance::default(),
+            color_space: WindowColorSpace::default(),
             icon: None,
             app_id: None,
             window_min_size: None,
@@ -1982,6 +1988,16 @@ impl Default for WindowOptions {
             tabbing_identifier: None,
         }
     }
+}
+
+/// The color space used for a window's composited output.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WindowColorSpace {
+    /// Standard RGB output, preserving the default rendering behavior.
+    #[default]
+    Srgb,
+    /// Display P3 primaries with the sRGB transfer function (macOS only).
+    DisplayP3,
 }
 
 /// The options that can be configured for a window's titlebar

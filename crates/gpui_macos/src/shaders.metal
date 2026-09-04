@@ -3,6 +3,29 @@
 
 using namespace metal;
 
+constant bool output_display_p3 [[function_constant(0)]];
+
+// Gamut conversion uses the piecewise sRGB transfer curve, shared by Display P3.
+// Keep gradient interpolation's existing gamma approximation independent.
+float3 decode_rgb(float3 color) {
+  return select(color / 12.92, pow((color + 0.055) / 1.055, float3(2.4)), color > 0.04045);
+}
+
+float3 encode_rgb(float3 color) {
+  color = max(color, 0.0);
+  return select(color * 12.92, 1.055 * pow(color, float3(1.0 / 2.4)) - 0.055, color > 0.0031308);
+}
+
+float4 srgb_to_output(float4 color) {
+  if (!output_display_p3) return color;
+  float3 linear = decode_rgb(color.rgb);
+  float3 p3 = float3(
+      0.82259287 * linear.r + 0.17753395 * linear.g,
+      0.03319951 * linear.r + 0.96678350 * linear.g,
+      0.01708535 * linear.r + 0.07239572 * linear.g + 0.91030148 * linear.b);
+  return float4(encode_rgb(p3), color.a);
+}
+
 float4 hsla_to_rgba(Hsla hsla);
 float3 srgb_to_linear(float3 color);
 float3 linear_to_srgb(float3 color);
@@ -115,7 +138,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
       quad.border_widths.right == 0.0 &&
       quad.border_widths.bottom == 0.0 &&
       unrounded) {
-    return background_color;
+    return srgb_to_output(background_color);
   }
 
   float2 size = float2(quad.bounds.size.width, quad.bounds.size.height);
@@ -175,7 +198,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
 
   // Fast path for points that must be part of the background
   if (is_within_inner_straight_border && !is_near_rounded_corner) {
-    return background_color;
+    return srgb_to_output(background_color);
   }
 
   // Signed distance of the point to the outside edge of the quad's border
@@ -393,7 +416,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
                 saturate(antialias_threshold - inner_sdf));
   }
 
-  return color * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf));
+  return srgb_to_output(color) * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf));
 }
 
 // Returns the dash velocity of a corner given the dash velocity of the two
@@ -551,7 +574,7 @@ fragment float4 shadow_fragment(ShadowFragmentInput input [[stage_in]],
     alpha *= saturate(0.5 - element_distance);
   }
 
-  return input.color * float4(1., 1., 1., alpha);
+  return srgb_to_output(input.color) * float4(1., 1., 1., alpha);
 }
 
 struct UnderlineVertexOutput {
@@ -612,9 +635,9 @@ fragment float4 underline_fragment(UnderlineFragmentInput input [[stage_in]],
     float distance_from_bottom_border = distance_in_pixels + half_thickness;
     float alpha = saturate(
         0.5 - max(-distance_from_bottom_border, distance_from_top_border));
-    return input.color * float4(1., 1., 1., alpha);
+    return srgb_to_output(input.color) * float4(1., 1., 1., alpha);
   } else {
-    return input.color;
+    return srgb_to_output(input.color);
   }
 }
 
@@ -669,7 +692,7 @@ fragment float4 monochrome_sprite_fragment(
       atlas_texture.sample(atlas_texture_sampler, input.tile_position);
   float4 color = input.color;
   color.a *= sample.a;
-  return color;
+  return srgb_to_output(color);
 }
 
 struct PolychromeSpriteVertexOutput {
@@ -728,7 +751,7 @@ fragment float4 polychrome_sprite_fragment(
     color.b = grayscale;
   }
   color.a *= sprite.opacity * saturate(0.5 - distance);
-  return color;
+  return srgb_to_output(color);
 }
 
 struct PathRasterizationVertexOutput {
@@ -808,6 +831,7 @@ fragment float4 path_rasterization_fragment(
     gradient_color.color0,
     gradient_color.color1
   );
+  color = srgb_to_output(color);
   return float4(color.rgb * color.a * alpha, alpha * color.a);
 }
 
@@ -896,7 +920,7 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
       y_texture.sample(texture_sampler, input.texture_position).r,
       cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);
 
-  return ycbcrToRGBTransform * ycbcr;
+  return srgb_to_output(ycbcrToRGBTransform * ycbcr);
 }
 
 fragment float4 bgra_surface_fragment(
@@ -905,19 +929,25 @@ fragment float4 bgra_surface_fragment(
     constant uint *color_space [[buffer(SurfaceInputIndex_ColorSpace)]]) {
   constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
   float4 color = bgra_texture.sample(texture_sampler, input.texture_position);
-  if (*color_space != 1 || color.a <= 0.0) {
+  bool source_display_p3 = *color_space == 1;
+  if (source_display_p3 == output_display_p3 || color.a <= 0.0) {
     return color;
+  }
+
+  if (!source_display_p3) {
+    float4 converted = srgb_to_output(float4(color.rgb / color.a, color.a));
+    return float4(converted.rgb * color.a, color.a);
   }
 
   // Display P3 and sRGB share a transfer curve. Convert the straight color in
   // linear light, then restore premultiplied alpha for GPUI's surface blend.
   float3 p3 = clamp(color.rgb / color.a, 0.0, 1.0);
-  float3 linear_p3 = srgb_to_linear(p3);
+  float3 linear_p3 = decode_rgb(p3);
   float3 linear_srgb = float3(
       1.224745 * linear_p3.r - 0.224904 * linear_p3.g,
      -0.042058 * linear_p3.r + 1.042081 * linear_p3.g,
      -0.019642 * linear_p3.r - 0.078655 * linear_p3.g + 1.098537 * linear_p3.b);
-  float3 srgb = linear_to_srgb(clamp(linear_srgb, 0.0, 1.0));
+  float3 srgb = encode_rgb(clamp(linear_srgb, 0.0, 1.0));
   return float4(srgb * color.a, color.a);
 }
 

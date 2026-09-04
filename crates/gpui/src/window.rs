@@ -1517,6 +1517,7 @@ impl Window {
             is_minimizable,
             display_id,
             window_background,
+            color_space,
             app_id,
             window_min_size,
             window_decorations,
@@ -1538,6 +1539,7 @@ impl Window {
             handle,
             WindowParams {
                 bounds: window_bounds.get_bounds(),
+                color_space,
                 titlebar,
                 kind,
                 is_movable,

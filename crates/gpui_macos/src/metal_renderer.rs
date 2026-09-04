@@ -8,12 +8,13 @@ use cocoa::{
 };
 use gpui::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
-    PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    PrimitiveBatch, ScaledPixels, Scene, Size, WindowColorSpace, point, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
 
 use core_foundation::base::TCFType;
+use core_graphics::color_space::{CGColorSpace, kCGColorSpaceDisplayP3, kCGColorSpaceSRGB};
 use core_video::{
     metal_texture::CVMetalTextureGetTexture,
     metal_texture_cache::CVMetalTextureCache,
@@ -51,8 +52,9 @@ pub(crate) unsafe fn new_renderer(
     _native_view: *mut c_void,
     _bounds: gpui::Size<f32>,
     transparent: bool,
+    color_space: WindowColorSpace,
 ) -> Renderer {
-    MetalRenderer::new(context, transparent)
+    MetalRenderer::new(context, transparent, color_space)
 }
 
 pub(crate) struct InstanceBufferPool {
@@ -152,12 +154,29 @@ pub struct PathRasterizationVertex {
 
 impl MetalRenderer {
     /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
-    pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
+    pub fn new(
+        instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        transparent: bool,
+        color_space: WindowColorSpace,
+    ) -> Self {
         let device = Self::create_device();
 
         let layer = metal::MetalLayer::new();
         layer.set_device(&device);
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        // Core Animation converts from this working space to the destination
+        // display profile, including when a window moves between displays.
+        let name = unsafe {
+            match color_space {
+                WindowColorSpace::Srgb => kCGColorSpaceSRGB,
+                WindowColorSpace::DisplayP3 => kCGColorSpaceDisplayP3,
+            }
+        };
+        let layer_color_space =
+            CGColorSpace::create_with_name(name).expect("system RGB color space must be available");
+        unsafe {
+            let _: () = msg_send![&*layer, setColorspace: layer_color_space.as_ptr()];
+        }
         // Support direct-to-display rendering if the window is not transparent
         // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
         layer.set_opaque(!transparent);
@@ -175,7 +194,13 @@ impl MetalRenderer {
             ];
         }
 
-        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+        Self::new_internal(
+            device,
+            Some(layer),
+            !transparent,
+            instance_buffer_pool,
+            color_space,
+        )
     }
 
     /// Creates a new headless MetalRenderer for offscreen rendering without a window.
@@ -185,7 +210,13 @@ impl MetalRenderer {
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_headless(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>) -> Self {
         let device = Self::create_device();
-        Self::new_internal(device, None, true, instance_buffer_pool)
+        Self::new_internal(
+            device,
+            None,
+            true,
+            instance_buffer_pool,
+            WindowColorSpace::Srgb,
+        )
     }
 
     fn create_device() -> metal::Device {
@@ -215,6 +246,7 @@ impl MetalRenderer {
         layer: Option<metal::MetalLayer>,
         opaque: bool,
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        color_space: WindowColorSpace,
     ) -> Self {
         #[cfg(feature = "runtime_shaders")]
         let library = device
@@ -260,6 +292,13 @@ impl MetalRenderer {
             },
         );
 
+        let constants = metal::FunctionConstantValues::new();
+        let output_display_p3 = color_space == WindowColorSpace::DisplayP3;
+        constants.set_constant_value_at_index(
+            (&output_display_p3 as *const bool).cast(),
+            metal::MTLDataType::Bool,
+            0,
+        );
         let paths_rasterization_pipeline_state = build_path_rasterization_pipeline_state(
             &device,
             &library,
@@ -268,6 +307,7 @@ impl MetalRenderer {
             "path_rasterization_fragment",
             MTLPixelFormat::BGRA8Unorm,
             PATH_SAMPLE_COUNT,
+            &constants,
         );
         let path_sprites_pipeline_state = build_premultiplied_pipeline_state(
             &device,
@@ -276,6 +316,7 @@ impl MetalRenderer {
             "path_sprite_vertex",
             "path_sprite_fragment",
             MTLPixelFormat::BGRA8Unorm,
+            &constants,
         );
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -284,6 +325,7 @@ impl MetalRenderer {
             "shadow_vertex",
             "shadow_fragment",
             MTLPixelFormat::BGRA8Unorm,
+            &constants,
         );
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -292,6 +334,7 @@ impl MetalRenderer {
             "quad_vertex",
             "quad_fragment",
             MTLPixelFormat::BGRA8Unorm,
+            &constants,
         );
         let underlines_pipeline_state = build_pipeline_state(
             &device,
@@ -300,6 +343,7 @@ impl MetalRenderer {
             "underline_vertex",
             "underline_fragment",
             MTLPixelFormat::BGRA8Unorm,
+            &constants,
         );
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -308,6 +352,7 @@ impl MetalRenderer {
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
             MTLPixelFormat::BGRA8Unorm,
+            &constants,
         );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -316,6 +361,7 @@ impl MetalRenderer {
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
             MTLPixelFormat::BGRA8Unorm,
+            &constants,
         );
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
@@ -324,6 +370,7 @@ impl MetalRenderer {
             "surface_vertex",
             "surface_fragment",
             MTLPixelFormat::BGRA8Unorm,
+            &constants,
         );
         let bgra_surfaces_pipeline_state = build_premultiplied_pipeline_state(
             &device,
@@ -332,6 +379,7 @@ impl MetalRenderer {
             "surface_vertex",
             "bgra_surface_fragment",
             MTLPixelFormat::BGRA8Unorm,
+            &constants,
         );
 
         let command_queue = device.new_command_queue();
@@ -1340,12 +1388,13 @@ fn build_pipeline_state(
     vertex_fn_name: &str,
     fragment_fn_name: &str,
     pixel_format: metal::MTLPixelFormat,
+    constants: &metal::FunctionConstantValues,
 ) -> metal::RenderPipelineState {
     let vertex_fn = library
         .get_function(vertex_fn_name, None)
         .expect("error locating vertex function");
     let fragment_fn = library
-        .get_function(fragment_fn_name, None)
+        .get_function(fragment_fn_name, Some(constants.clone()))
         .expect("error locating fragment function");
 
     let descriptor = metal::RenderPipelineDescriptor::new();
@@ -1360,7 +1409,7 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
@@ -1374,12 +1423,13 @@ fn build_premultiplied_pipeline_state(
     vertex_fn_name: &str,
     fragment_fn_name: &str,
     pixel_format: metal::MTLPixelFormat,
+    constants: &metal::FunctionConstantValues,
 ) -> metal::RenderPipelineState {
     let vertex_fn = library
         .get_function(vertex_fn_name, None)
         .expect("error locating vertex function");
     let fragment_fn = library
-        .get_function(fragment_fn_name, None)
+        .get_function(fragment_fn_name, Some(constants.clone()))
         .expect("error locating fragment function");
 
     let descriptor = metal::RenderPipelineDescriptor::new();
@@ -1394,13 +1444,14 @@ fn build_premultiplied_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
         .expect("could not create render pipeline state")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_path_rasterization_pipeline_state(
     device: &metal::DeviceRef,
     library: &metal::LibraryRef,
@@ -1409,12 +1460,13 @@ fn build_path_rasterization_pipeline_state(
     fragment_fn_name: &str,
     pixel_format: metal::MTLPixelFormat,
     path_sample_count: u32,
+    constants: &metal::FunctionConstantValues,
 ) -> metal::RenderPipelineState {
     let vertex_fn = library
         .get_function(vertex_fn_name, None)
         .expect("error locating vertex function");
     let fragment_fn = library
-        .get_function(fragment_fn_name, None)
+        .get_function(fragment_fn_name, Some(constants.clone()))
         .expect("error locating fragment function");
 
     let descriptor = metal::RenderPipelineDescriptor::new();
@@ -1690,5 +1742,185 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use core_foundation::{base::CFType, dictionary::CFDictionary, string::CFString};
+    use core_video::pixel_buffer::{CVPixelBuffer, kCVPixelBufferIOSurfacePropertiesKey};
+    use gpui::{Quad, SurfaceColorSpace, rgba};
+
+    fn renderer(color_space: WindowColorSpace) -> MetalRenderer {
+        MetalRenderer::new_internal(
+            MetalRenderer::create_device(),
+            None,
+            false,
+            Arc::new(Mutex::new(InstanceBufferPool::default())),
+            color_space,
+        )
+    }
+
+    fn bounds() -> Bounds<ScaledPixels> {
+        Bounds::new(
+            point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(8.), ScaledPixels(8.)),
+        )
+    }
+
+    fn quad(color: u32) -> Quad {
+        Quad {
+            bounds: bounds(),
+            content_mask: ContentMask { bounds: bounds() },
+            background: rgba(color).into(),
+            ..Default::default()
+        }
+    }
+
+    fn surface(color: [u8; 4], color_space: SurfaceColorSpace) -> PaintSurface {
+        let key = unsafe { CFString::wrap_under_get_rule(kCVPixelBufferIOSurfacePropertiesKey) };
+        let properties = CFDictionary::<CFString, CFType>::from_CFType_pairs(&[]);
+        let options = CFDictionary::from_CFType_pairs(&[(key, properties.as_CFType())]);
+        let pixel_buffer = CVPixelBuffer::new(kCVPixelFormatType_32BGRA, 8, 8, Some(&options))
+            .expect("IOSurface-backed pixel buffer");
+        assert_eq!(pixel_buffer.lock_base_address(0), 0);
+        // The buffer is locked and each write is within its allocated row.
+        unsafe {
+            let address = pixel_buffer.get_base_address().cast::<u8>();
+            for row in 0..8 {
+                for column in 0..8 {
+                    let pixel = address.add(row * pixel_buffer.get_bytes_per_row() + column * 4);
+                    ptr::copy_nonoverlapping(
+                        [color[2], color[1], color[0], color[3]].as_ptr(),
+                        pixel,
+                        4,
+                    );
+                }
+            }
+        }
+        assert_eq!(pixel_buffer.unlock_base_address(0), 0);
+        PaintSurface {
+            order: Default::default(),
+            bounds: bounds(),
+            content_mask: ContentMask { bounds: bounds() },
+            image_buffer: pixel_buffer,
+            color_space,
+            frame_lifetime: None,
+        }
+    }
+
+    fn pixel(renderer: &mut MetalRenderer, mut scene: Scene) -> [u8; 4] {
+        scene.finish();
+        let image = renderer
+            .render_scene_to_image(&scene, size(DevicePixels(8), DevicePixels(8)))
+            .expect("render scene");
+        image.get_pixel(4, 4).0
+    }
+
+    fn assert_color(actual: [u8; 4], expected: [u8; 4]) {
+        assert!(
+            actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+            "{actual:?} != {expected:?}"
+        );
+    }
+
+    #[test]
+    fn display_p3_output_preserves_wide_gamut_surfaces() {
+        let mut renderer = renderer(WindowColorSpace::DisplayP3);
+        for color in [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [43, 180, 97, 255],
+            [96, 16, 4, 128],
+            [0, 0, 0, 0],
+        ] {
+            let mut scene = Scene::default();
+            scene.insert_primitive(surface(color, SurfaceColorSpace::DisplayP3));
+            assert_color(pixel(&mut renderer, scene), color);
+        }
+    }
+
+    #[test]
+    fn srgb_ui_and_surfaces_convert_to_the_same_display_p3_color() {
+        let mut renderer = renderer(WindowColorSpace::DisplayP3);
+        let mut scene = Scene::default();
+        scene.insert_primitive(quad(0xff0000ff));
+        assert_color(pixel(&mut renderer, scene), [234, 51, 35, 255]);
+        let mut scene = Scene::default();
+        scene.insert_primitive(surface([255, 0, 0, 255], SurfaceColorSpace::Srgb));
+        assert_color(pixel(&mut renderer, scene), [234, 51, 35, 255]);
+        let mut scene = Scene::default();
+        scene.insert_primitive(surface([128, 0, 0, 128], SurfaceColorSpace::Srgb));
+        assert_color(pixel(&mut renderer, scene), [117, 26, 18, 128]);
+    }
+
+    #[test]
+    fn default_srgb_output_is_unchanged_and_converts_p3_input() {
+        let mut renderer = renderer(WindowColorSpace::Srgb);
+        let mut scene = Scene::default();
+        scene.insert_primitive(quad(0x804020ff));
+        assert_color(pixel(&mut renderer, scene), [128, 64, 32, 255]);
+        let mut scene = Scene::default();
+        scene.insert_primitive(surface([234, 51, 35, 255], SurfaceColorSpace::DisplayP3));
+        assert_color(pixel(&mut renderer, scene), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn transparent_ui_and_surfaces_use_source_over_alpha() {
+        let mut renderer = renderer(WindowColorSpace::DisplayP3);
+        let mut scene = Scene::default();
+        scene.insert_primitive(quad(0xffffff80));
+        scene.insert_primitive(surface([0, 128, 0, 128], SurfaceColorSpace::DisplayP3));
+        assert_color(pixel(&mut renderer, scene), [64, 192, 64, 192]);
+    }
+
+    #[test]
+    fn paths_are_converted_once_before_premultiplied_compositing() {
+        let mut renderer = renderer(WindowColorSpace::DisplayP3);
+        let mut builder = gpui::PathBuilder::fill();
+        builder.move_to(point(gpui::px(0.), gpui::px(0.)));
+        builder.line_to(point(gpui::px(8.), gpui::px(0.)));
+        builder.line_to(point(gpui::px(8.), gpui::px(8.)));
+        builder.line_to(point(gpui::px(0.), gpui::px(8.)));
+        builder.close();
+        let mut path = builder.build().expect("path").scale(1.);
+        path.color = rgba(0xff000080).into();
+        path.content_mask = ContentMask { bounds: bounds() };
+        let mut scene = Scene::default();
+        scene.insert_primitive(path);
+        assert_color(pixel(&mut renderer, scene), [117, 26, 18, 128]);
+    }
+
+    #[test]
+    fn color_images_are_converted_to_display_p3() {
+        use gpui::PlatformAtlas;
+        let mut renderer = renderer(WindowColorSpace::DisplayP3);
+        let key = gpui::AtlasKey::Image(gpui::RenderImageParams {
+            image_id: gpui::ImageId(1),
+            frame_index: 0,
+        });
+        let tile = renderer
+            .sprite_atlas
+            .get_or_insert_with(&key, &mut || {
+                Ok(Some((
+                    size(DevicePixels(8), DevicePixels(8)),
+                    std::borrow::Cow::Owned([0, 0, 255, 255].repeat(64)),
+                )))
+            })
+            .expect("atlas insertion")
+            .expect("tile");
+        let mut scene = Scene::default();
+        scene.insert_primitive(gpui::PolychromeSprite {
+            order: Default::default(),
+            pad: 0,
+            grayscale: false.into(),
+            opacity: 1.,
+            bounds: bounds(),
+            content_mask: ContentMask { bounds: bounds() },
+            corner_radii: Default::default(),
+            tile,
+        });
+        assert_color(pixel(&mut renderer, scene), [234, 51, 35, 255]);
     }
 }

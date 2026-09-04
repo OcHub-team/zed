@@ -767,6 +767,7 @@ impl MacWindow {
         handle: AnyWindowHandle,
         WindowParams {
             bounds,
+            color_space,
             titlebar,
             kind,
             is_movable,
@@ -910,6 +911,7 @@ impl MacWindow {
                     native_view as *mut _,
                     bounds.size.map(|pixels| pixels.as_f32()),
                     false,
+                    color_space,
                 ),
                 request_frame_callback: None,
                 event_callback: None,
