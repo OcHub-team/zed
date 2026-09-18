@@ -3271,7 +3271,17 @@ extern "C" fn blurred_view_init_with_frame(this: &Object, _: Sel, frame: NSRect)
         let view = msg_send![super(this, class!(NSVisualEffectView)), initWithFrame: frame];
         // Use a colorless semantic material. The default value `AppearanceBased`, though not
         // manually set, is deprecated.
-        NSVisualEffectView::setMaterial_(view, NSVisualEffectMaterial::Selection);
+        //
+        // Since macOS 26, `Selection` renders its material inside the view's own layer, so
+        // `remove_layer_background` erases the entire effect and the window becomes
+        // see-through. `UnderWindowBackground` is composited by the window server behind
+        // the view's layer tree, so the strip below still leaves a colorless blur.
+        let material = if is_macos_version_at_least(NSOperatingSystemVersion::new(26, 0, 0)) {
+            NSVisualEffectMaterial::UnderWindowBackground
+        } else {
+            NSVisualEffectMaterial::Selection
+        };
+        NSVisualEffectView::setMaterial_(view, material);
         NSVisualEffectView::setState_(view, NSVisualEffectState::Active);
         view
     }
